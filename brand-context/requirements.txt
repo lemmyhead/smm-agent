@@ -1,0 +1,6 @@
+# Run brandctx from any venv with these installed (the ADK deploy venv from DEPLOY.md step 3 works: pip install -r brand-context/requirements.txt)
+google-genai>=2.24.0
+google-cloud-firestore==2.31.0
+google-cloud-storage==3.14.1
+pydantic>=2.13.5
+striprtf==0.0.33

@@ -52,6 +52,7 @@ class FakeDb:
 def env(monkeypatch):
     fake = FakeDb()
     monkeypatch.setattr(main, "db", lambda: fake)
+    monkeypatch.setattr(main, "brand_defaults", lambda: {})
     run = mock.Mock()
     monkeypatch.setattr(main.agent_client, "run_agent", run)
     return TestClient(main.app), fake, run
@@ -114,3 +115,41 @@ def test_link_is_optional(env):
     b = copy.deepcopy(GOOD)
     del b["link"]
     assert client.post("/briefs", json=b).status_code == 202
+
+
+SAVED = {"voice": {"text": "Friendly. No exclamation marks."},
+         "visual": {"brand": {"logo_url": "gs://bucket/brand/default/logo.png", "primary_color": "#111111",
+                              "accent_color": "#eeeeee", "font": "Lato"}}}
+
+
+def test_saved_brand_and_voice_fill_a_minimal_brief(env, monkeypatch):
+    client, fake, run = env
+    monkeypatch.setattr(main, "brand_defaults", lambda: SAVED)
+    b = copy.deepcopy(GOOD)
+    del b["brand"], b["tone"]
+    r = client.post("/briefs", json=b)
+    assert r.status_code == 202, r.text
+    saved_brief = fake.docs[r.json()["job_id"]]["brief"]
+    assert saved_brief["brand"] == SAVED["visual"]["brand"] and "brand voice guide" in saved_brief["tone"]
+
+
+def test_fields_sent_in_the_brief_win_over_saved_defaults(env, monkeypatch):
+    client, fake, run = env
+    monkeypatch.setattr(main, "brand_defaults", lambda: SAVED)
+    b = copy.deepcopy(GOOD)
+    b["brand"] = {"primary_color": "#abcdef"}  # partial: only the colour is overridden
+    r = client.post("/briefs", json=b)
+    assert r.status_code == 202, r.text
+    brief = fake.docs[r.json()["job_id"]]["brief"]
+    assert brief["brand"]["primary_color"] == "#abcdef" and brief["brand"]["font"] == "Lato"
+    assert brief["tone"] == "friendly"
+
+
+def test_missing_brand_without_saved_defaults_is_400(env):
+    client, fake, run = env
+    b = copy.deepcopy(GOOD)
+    del b["brand"], b["tone"]
+    r = client.post("/briefs", json=b)
+    fields = {d["field"] for d in r.json()["details"]}
+    assert r.status_code == 400 and {"brand.logo_url", "brand.font", "tone"} <= fields
+    assert fake.docs == {} and not run.called
