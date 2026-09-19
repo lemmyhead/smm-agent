@@ -246,6 +246,23 @@ your chat ID; that URL stops returning messages once a webhook is set). Then cha
 | `/logo`, then the image | Saved as the default logo. |
 | `/show`, `/show full`, `/clear` | See what is saved / delete everything (asks you to confirm). |
 
+### Submitting a brief through the bot
+
+`scripts/deploy-telegram.sh` also lets the bot take campaign briefs, so you never have to build JSON. It needs
+`smm-brief-intake` deployed first (step 3); the script grants the bot's service account `run.invoker` on it.
+
+| You send | What happens |
+|---|---|
+| `/brief` | The bot asks you to describe the campaign. |
+| A message in any language: name, what the posts must say, call to action, link, platforms | Gemini fills in the brief fields and shows the draft with what is still missing. Send another message to change anything ("make the CTA Read more"); only the fields you mention change. |
+| The background image | Sent as a photo it works, but Telegram shrinks photos; send it as a file for full quality. Stored under `briefs/` in the assets bucket (deleted after 90 days). |
+| `/send` | The brief goes to `brief-intake`, which validates it exactly like an API call. You get "Started job …", and the notify function then posts the drafts and images in the same chat. |
+| `/cancel` | Discards the draft. A draft survives other commands (for example `/show`), and `/brief new` starts a fresh one. |
+
+Colours, font, logo and tone come from the saved brand context, so `/send` is refused with a hint until the brand block
+is saved (`/guidelines`, `/logo`) and there is either a saved voice guide or a tone in the message. If intake rejects a
+brief (bad URL, unknown platform), the bot repeats its field-by-field message.
+
 Because this service must be reachable by Telegram, it is **public**, unlike the others. It is protected three ways:
 requests must carry Telegram's secret-token header (a random value in the `telegram-webhook-secret` secret; anything
 else gets 401), the bot answers only the chat IDs in `TELEGRAM_ALLOWED_CHAT_IDS` and stays silent for everyone else, and its
@@ -417,7 +434,7 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 
 ## What has and hasn't been tested
 
-Tested locally (90 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
+Tested locally (98 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
 bad-image and injection cases), the agent pipeline end to end through ADK's runner with a fake Gemini, a fake render
 service and a fake Firestore, brief validation, and the notify function against real Firestore event protobufs
 with a fake Telegram API. Shell scripts are syntax-checked.

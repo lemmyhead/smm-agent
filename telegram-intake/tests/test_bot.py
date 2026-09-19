@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "telegram-intake"))
 sys.path.insert(0, str(ROOT / "brand-context"))  # first, so the source of brandcore wins over the deploy-time copy
 import brandcore as core  # noqa: E402
+import briefs  # noqa: E402
 import main  # noqa: E402
 
 CHAT = 440581589
@@ -52,6 +53,10 @@ class FakeStore:
         self.uploads[name] = data
         return f"gs://b/brand/default/{name}"
 
+    def upload_path(self, path, data, ctype):
+        self.uploads[path] = data
+        return f"gs://b/{path}"
+
     def delete_prefix(self, prefix):
         self.deleted.append(prefix)
 
@@ -60,9 +65,21 @@ class FakeStore:
         self.deleted.append("*")
 
 
+class FakeModels:
+    def __init__(self, ai):
+        self.ai = ai
+
+    def generate_content(self, model, contents, config):
+        self.ai.prompts.append(contents)
+        return type("R", (), {"text": json.dumps(self.ai.replies.pop(0))})()
+
+
 class FakeAi:
+    model = "fake"
+
     def __init__(self):
-        self.calls = []
+        self.calls, self.prompts, self.replies = [], [], []
+        self.client = type("C", (), {"models": FakeModels(self)})()
 
     def transcribe(self, pdf):
         self.calls.append("transcribe")
@@ -87,6 +104,8 @@ class Bot:
         monkeypatch.setattr(main, "tg_download", lambda file_id: self.files[file_id])
         monkeypatch.setattr(main, "session_get", lambda chat: dict(self.sessions.get(chat, {})))
         monkeypatch.setattr(main, "session_put", lambda chat, **f: self.sessions.setdefault(chat, {}).update(f))
+        self.submitted = []
+        monkeypatch.setattr(briefs, "submit", lambda draft: self.submitted.append(dict(draft)) or "0123456789abcdef")
         monkeypatch.setattr(main, "claim_update", lambda uid: (uid not in self.seen) and not self.seen.add(uid))
 
     def send(self, chat=CHAT, headers=H, uid=None, **message):
@@ -328,3 +347,102 @@ def test_a_whole_document_pasted_as_one_example_is_refused(bot):
     bot.say("/examples")
     bot.file("doc.txt", ("word " * 2000).encode())
     assert "whole document" in bot.last and not bot.store.doc.get("examples")
+
+
+# ---------- briefs ----------
+
+BRAND = {"visual": {"brand": {"logo_url": "gs://b/logo.png", "primary_color": "#1f4d3a", "accent_color": "#f2b134",
+                             "font": "Lora"}}, "voice": {"text": "Be kind."}}
+PNG = b"\x89PNG fake"
+
+
+def test_full_brief_flow_sends_only_the_campaign_fields(bot):
+    bot.store.doc = json.loads(json.dumps(BRAND))
+    bot.say("/brief")
+    assert "Describe the campaign" in bot.last
+    bot.ai.replies.append({"campaign_name": "Summer heat", "key_message": "Drink water.", "cta": "Learn more",
+                           "link": "https://example.org/heat", "platforms": ["facebook", "instagram_feed", "made_up"]})
+    bot.say("Campaign Summer heat, tell people to drink water, CTA learn more, facebook and instagram")
+    assert "Platforms: facebook, instagram_feed" in bot.last and "made_up" not in bot.last
+    assert "Tone: from the saved voice guide" in bot.last and "Background image (send it" in bot.last
+    bot.say("/send")
+    assert "not complete" in bot.last and bot.submitted == []
+    bot.file("bg.png", PNG)
+    assert "Everything is there" in bot.last
+    (path, data), = bot.store.uploads.items()
+    assert path.startswith(f"briefs/{CHAT}/") and path.endswith("-bg.png") and data == PNG
+    bot.say("/send")
+    (sent,) = bot.submitted
+    assert sent["campaign_name"] == "Summer heat" and sent["background_image_url"] == f"gs://b/{path}"
+    assert "tone" not in sent and "brand" not in sent  # intake fills these from the saved brand context
+    assert "Started job 01234567" in bot.last
+    assert bot.sessions[CHAT]["brief"] is None and bot.sessions[CHAT]["mode"] is None
+
+
+def test_a_later_message_changes_only_what_it_mentions(bot):
+    bot.store.doc = json.loads(json.dumps(BRAND))
+    bot.say("/brief")
+    bot.ai.replies += [{"campaign_name": "A", "key_message": "M", "cta": "Go", "platforms": ["threads"]},
+                       {"cta": "Read more", "campaign_name": None, "platforms": None}]
+    bot.say("first")
+    bot.say("make the CTA Read more")
+    draft = bot.sessions[CHAT]["brief"]
+    assert draft == {"campaign_name": "A", "key_message": "M", "cta": "Read more", "platforms": ["threads"]}
+    assert '"campaign_name": "A"' in bot.ai.prompts[1]  # the model sees the current draft
+
+
+def test_missing_brand_context_blocks_sending_with_a_hint(bot):
+    bot.say("/brief")
+    bot.ai.replies.append({"campaign_name": "A", "key_message": "M", "cta": "Go", "platforms": ["threads"],
+                           "tone": "calm"})
+    bot.say("details")
+    bot.photo(PNG)
+    assert "send /guidelines and /logo" in bot.last
+    bot.say("/send")
+    assert "not complete" in bot.last and bot.submitted == []
+
+
+def test_tone_is_required_when_there_is_no_saved_voice_guide(bot):
+    bot.store.doc = {"visual": BRAND["visual"]}
+    bot.say("/brief")
+    bot.ai.replies.append({"campaign_name": "A", "key_message": "M", "cta": "Go", "platforms": ["threads"]})
+    bot.say("details")
+    assert "Tone (or save a voice guide" in bot.last
+
+
+def test_background_must_be_an_image(bot):
+    bot.say("/brief")
+    bot.file("notes.pdf", b"%PDF")
+    assert "must be a .png, .jpg or .webp" in bot.last and bot.store.uploads == {}
+
+
+def test_brief_survives_a_detour_and_cancel_discards_it(bot):
+    bot.store.doc = json.loads(json.dumps(BRAND))
+    bot.say("/brief")
+    bot.ai.replies.append({"campaign_name": "A"})
+    bot.say("name A")
+    bot.say("/show")
+    bot.say("/brief")
+    assert "Campaign: A" in bot.last
+    bot.say("/cancel")
+    bot.say("/brief")
+    assert "Describe the campaign" in bot.last
+
+
+def test_send_without_a_brief_is_refused(bot):
+    bot.say("/send")
+    assert "no brief in progress" in bot.last
+
+
+def test_intake_rejection_is_shown_to_the_user(bot, monkeypatch):
+    class R:
+        status_code = 400
+        def json(self): return {"details": [{"field": "link", "message": "must be a valid http(s) URL"}]}
+
+    monkeypatch.undo()  # use the real submit with a stubbed HTTP layer
+    import google.oauth2.id_token as idt
+    monkeypatch.setattr(idt, "fetch_id_token", lambda req, aud: "tok")
+    monkeypatch.setattr(briefs.requests, "post", lambda *a, **k: R())
+    monkeypatch.setenv("BRIEF_INTAKE_URL", "https://intake.example/")
+    with pytest.raises(core.BrandError, match="link: must be a valid http"):
+        briefs.submit({"campaign_name": "A", "link": "nope"})
