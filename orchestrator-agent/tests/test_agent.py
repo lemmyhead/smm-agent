@@ -121,6 +121,16 @@ def drafts_json(platforms, body="Big news! 30% off. Shop now https://example.com
         for p in platforms]})
 
 
+async def test_brief_without_background_or_brand_still_renders(db, render):
+    bare = {**{k: v for k, v in BRIEF.items() if k not in ("brand", "background_image_url")},
+            "brand": {"logo_url": None, "primary_color": None, "accent_color": None, "font": None},
+            "background_image_url": None}
+    await run(drafts_json(["threads", "facebook", "instagram_story"]), brief=bare)
+    assert db.doc["status"] == "ready_for_review" and len(db.doc["images"]) == 3
+    for call in render:  # left out, so the render service applies its own defaults
+        assert set(call["variables"]) == {"headline", "cta", "campaign_name"}
+
+
 async def test_happy_path(db, render):
     await run(drafts_json(["threads", "facebook", "instagram_story"]))
     assert db.doc["status"] == "ready_for_review" and db.doc["error"] is None

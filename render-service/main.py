@@ -26,6 +26,7 @@ BASE = Path(__file__).parent
 SHARED_DIR = Path(os.environ.get("SHARED_DIR", BASE / "shared"))
 ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "")
 MAX_IMAGE_BYTES = 15 * 1024 * 1024
+DEFAULT_PRIMARY, DEFAULT_ACCENT, DEFAULT_FONT = "#1f2933", "#ffffff", "Helvetica Neue"  # for briefs with no brand
 HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 SAFE_FONT = re.compile(r"^[A-Za-z0-9 \-]{1,60}$")
 
@@ -42,11 +43,11 @@ class Variables(BaseModel):
     headline: str = Field(min_length=1, max_length=300)
     cta: str = Field(default="", max_length=80)
     campaign_name: str = Field(default="", max_length=120)
-    logo_url: str
-    background_image_url: str
-    primary_color: str
-    accent_color: str
-    font: str = "Helvetica Neue"
+    logo_url: str | None = None
+    background_image_url: str | None = None
+    primary_color: str | None = None
+    accent_color: str | None = None
+    font: str | None = None
 
 
 class RenderRequest(BaseModel):
@@ -179,13 +180,14 @@ async def render(req: RenderRequest):
     if req.template_id not in KNOWN_TEMPLATES:
         raise HTTPException(400, f"unknown template_id {req.template_id!r}; known: {sorted(KNOWN_TEMPLATES)}")
     v = req.variables
-    for label, color in (("primary_color", v.primary_color), ("accent_color", v.accent_color)):
+    primary, accent = v.primary_color or DEFAULT_PRIMARY, v.accent_color or DEFAULT_ACCENT
+    for label, color in (("primary_color", primary), ("accent_color", accent)):
         if not HEX_COLOR.match(color):
             raise HTTPException(400, f"{label} must be a #hex colour, got {color!r}")
-    font = v.font if SAFE_FONT.match(v.font) else "Helvetica Neue"
+    font = v.font if v.font and SAFE_FONT.match(v.font) else DEFAULT_FONT
 
     try:
-        bg = await to_data_uri(v.background_image_url)
+        bg = await to_data_uri(v.background_image_url) if v.background_image_url else ""
         logo = await to_data_uri(v.logo_url) if v.logo_url else ""
     except Exception as e:  # bad/unreachable/oversized image -> a clear 422, not a 500
         log.warning("asset fetch failed: %s", e)
@@ -193,7 +195,7 @@ async def render(req: RenderRequest):
 
     html = jinja.get_template(f"{req.template_id}.html.j2").render(
         headline=v.headline, cta=v.cta, campaign_name=v.campaign_name,
-        primary_color=v.primary_color, accent_color=v.accent_color,
+        primary_color=primary, accent_color=accent,
         font_family=font,
         font_url=f"https://fonts.googleapis.com/css2?family={quote(font)}:wght@400;700;800&display=swap",
         background_image_data=bg, logo_data=logo,

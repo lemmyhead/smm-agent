@@ -59,15 +59,11 @@ def parse(ai, text: str, current: dict) -> dict:
 
 
 def missing(draft: dict, saved: dict) -> list[str]:
-    """What must still be provided before the brief can be sent, given the saved brand context."""
+    """What must still be provided before the brief can be sent. The background image and the brand block are
+    optional: without them the images are plain colour, using whatever brand details have been saved."""
     need = [LABELS[k] for k in ("campaign_name", "key_message", "cta", "platforms") if not draft.get(k)]
-    if not draft.get("background_image_url"):
-        need.append("Background image (send it as a photo, or as a file for full quality)")
     if not draft.get("tone") and not (saved.get("voice") or {}).get("text"):
         need.append("Tone (or save a voice guide with /voice)")
-    brand = (saved.get("visual") or {}).get("brand") or {}
-    if not all(brand.get(k) for k in ("logo_url", "primary_color", "accent_color", "font")):
-        need.append("Brand colours, font and logo (send /guidelines and /logo)")
     return need
 
 
@@ -81,7 +77,7 @@ def format_draft(draft: dict, saved: dict) -> str:
         if key == "tone" and not value and voice:
             value = "from the saved voice guide"
         lines.append(f"{LABELS[key]}: {value or '(not set)'}")
-    lines.append(f"Background image: {'attached' if draft.get('background_image_url') else '(not set)'}")
+    lines.append(f"Background image: {'attached' if draft.get('background_image_url') else '(none, optional)'}")
     need = missing(draft, saved)
     if need:
         lines.append("\nStill needed:\n- " + "\n- ".join(need))

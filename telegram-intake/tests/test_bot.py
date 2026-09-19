@@ -364,9 +364,7 @@ def test_full_brief_flow_sends_only_the_campaign_fields(bot):
                            "link": "https://example.org/heat", "platforms": ["facebook", "instagram_feed", "made_up"]})
     bot.say("Campaign Summer heat, tell people to drink water, CTA learn more, facebook and instagram")
     assert "Platforms: facebook, instagram_feed" in bot.last and "made_up" not in bot.last
-    assert "Tone: from the saved voice guide" in bot.last and "Background image (send it" in bot.last
-    bot.say("/send")
-    assert "not complete" in bot.last and bot.submitted == []
+    assert "Tone: from the saved voice guide" in bot.last and "Background image: (none, optional)" in bot.last
     bot.file("bg.png", PNG)
     assert "Everything is there" in bot.last
     (path, data), = bot.store.uploads.items()
@@ -391,15 +389,16 @@ def test_a_later_message_changes_only_what_it_mentions(bot):
     assert '"campaign_name": "A"' in bot.ai.prompts[1]  # the model sees the current draft
 
 
-def test_missing_brand_context_blocks_sending_with_a_hint(bot):
-    bot.say("/brief")
+def test_background_and_brand_are_optional(bot):
+    bot.say("/brief")  # no saved brand context at all, and no image
     bot.ai.replies.append({"campaign_name": "A", "key_message": "M", "cta": "Go", "platforms": ["threads"],
                            "tone": "calm"})
     bot.say("details")
-    bot.photo(PNG)
-    assert "send /guidelines and /logo" in bot.last
+    assert "Everything is there" in bot.last
     bot.say("/send")
-    assert "not complete" in bot.last and bot.submitted == []
+    (sent,) = bot.submitted
+    assert sent == {"campaign_name": "A", "key_message": "M", "cta": "Go", "platforms": ["threads"], "tone": "calm"}
+    assert "Started job" in bot.last
 
 
 def test_tone_is_required_when_there_is_no_saved_voice_guide(bot):

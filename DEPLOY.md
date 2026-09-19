@@ -255,13 +255,14 @@ your chat ID; that URL stops returning messages once a webhook is set). Then cha
 |---|---|
 | `/brief` | The bot asks you to describe the campaign. |
 | A message in any language: name, what the posts must say, call to action, link, platforms | Gemini fills in the brief fields and shows the draft with what is still missing. Send another message to change anything ("make the CTA Read more"); only the fields you mention change. |
-| The background image | Sent as a photo it works, but Telegram shrinks photos; send it as a file for full quality. Stored under `briefs/` in the assets bucket (deleted after 90 days). |
+| A background image (optional) | Sent as a photo it works, but Telegram shrinks photos; send it as a file for full quality. Without one the images get a plain background in the brand's primary colour. Stored under `briefs/` in the assets bucket (deleted after 90 days). |
 | `/send` | The brief goes to `brief-intake`, which validates it exactly like an API call. You get "Started job …", and the notify function then posts the drafts and images in the same chat. |
 | `/cancel` | Discards the draft. A draft survives other commands (for example `/show`), and `/brief new` starts a fresh one. |
 
-Colours, font, logo and tone come from the saved brand context, so `/send` is refused with a hint until the brand block
-is saved (`/guidelines`, `/logo`) and there is either a saved voice guide or a tone in the message. If intake rejects a
-brief (bad URL, unknown platform), the bot repeats its field-by-field message.
+Colours, font, logo and tone come from the saved brand context. Only the campaign name, key message, call to action and
+platforms are required, plus a tone unless a voice guide is saved; `/send` is refused with a hint until those are there.
+The background image and the visual guidelines are optional. If intake rejects a brief (bad URL, unknown platform), the bot
+repeats its field-by-field message.
 
 Because this service must be reachable by Telegram, it is **public**, unlike the others. It is protected three ways:
 requests must carry Telegram's secret-token header (a random value in the `telegram-webhook-secret` secret; anything
@@ -314,8 +315,12 @@ with a hint to put a line containing only `---` between posts. Screenshot and te
 12 screenshots and 30,000 characters, and the check is atomic, so files sent at the same moment cannot slip past it.
 
 Anything you do put in the brief wins: a partial `brand` (for example only `primary_color`) overrides just that field and
-keeps the rest of the defaults. `tone`, if given, is used together with the voice guide. Without a saved brand block, a
-brief must still contain the whole `brand`; without a voice guide it must contain `tone`. Either gap is a 400 that names the fields.
+keeps the rest of the defaults. `tone`, if given, is used together with the voice guide. Without a voice guide a brief must
+contain `tone` (otherwise a 400 names the field).
+
+**Brand and background are optional.** A brief may leave out `brand` (or any part of it) and `background_image_url`, with or
+without saved defaults. The render service then falls back to a plain design: no logo, a dark `#1f2933` background instead
+of the photo, a white accent and Helvetica Neue. Whatever is given is still validated (a bad hex colour or URL is a 400).
 
 Re-run any command to replace what it saved (`examples --add` keeps the existing ones). `scripts/brand-context.sh clear --yes`
 deletes the saved context and its files. `BRAND_PROFILE` (default `default`) selects which profile the agent and intake read.
@@ -426,7 +431,7 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
   `--source`, `--entry-point` and the path pattern (notify), `ASSETS_BUCKET` on the render service.
 - `gcloud storage` replaces `gsutil` in `provision.sh` (same result).
 - The 90-day lifecycle rule only applies to objects under `renders/`, not the whole bucket, so the brand files stored in it are not deleted.
-- `brand` and `tone` may be left out of a brief when a brand context has been saved (step 5); intake fills them in. Without saved defaults they are required, as in the spec.
+- `brand`, `background_image_url` and (when a voice guide is saved) `tone` may be left out of a brief, unlike the spec, which requires them. Intake fills brand and tone from the saved brand context (step 5); with nothing saved the render service uses neutral defaults (no logo, dark background, white accent).
 - The agent is deployed with the `adk deploy agent_engine` CLI, not a hand-written `agent_engines.create(...)` call.
   This ADK version (2.9.2) deploys a container built from your agent folder, and the CLI is the documented path.
 - Copy limits apply to the post `body` only (not headline or hashtags). If the model overshoots, the body is cut at a
@@ -434,7 +439,7 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 
 ## What has and hasn't been tested
 
-Tested locally (98 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
+Tested locally (102 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
 bad-image and injection cases), the agent pipeline end to end through ADK's runner with a fake Gemini, a fake render
 service and a fake Firestore, brief validation, and the notify function against real Firestore event protobufs
 with a fake Telegram API. Shell scripts are syntax-checked.
