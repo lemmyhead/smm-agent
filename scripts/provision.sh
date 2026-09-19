@@ -30,8 +30,8 @@ gcloud storage buckets update "gs://$BUCKET" --lifecycle-file="$LIFECYCLE"
 rm -f "$LIFECYCLE"
 
 echo "== 4. Secret container (value is added by hand, see DEPLOY.md)"
-gcloud secrets describe slack-bot-token >/dev/null 2>&1 || \
-  gcloud secrets create slack-bot-token --replication-policy=automatic
+gcloud secrets describe telegram-bot-token >/dev/null 2>&1 || \
+  gcloud secrets create telegram-bot-token --replication-policy=automatic
 
 echo "== 5. Service accounts"
 for name in "sa-brief-intake:SMM brief intake" "sa-agent-orchestrator:SMM agent orchestrator" \
@@ -57,13 +57,13 @@ bind sa-render-service     roles/storage.objectAdmin
 bind sa-notify-function    roles/datastore.viewer
 bind sa-notify-function    roles/storage.objectViewer
 bind sa-notify-function    roles/eventarc.eventReceiver   # addition: required for Firestore triggers
-gcloud secrets add-iam-policy-binding slack-bot-token \
+gcloud secrets add-iam-policy-binding telegram-bot-token \
   --member="serviceAccount:$(sa sa-notify-function)" --role=roles/secretmanager.secretAccessor >/dev/null
-echo "  sa-notify-function -> secretAccessor on slack-bot-token"
+echo "  sa-notify-function -> secretAccessor on telegram-bot-token"
 
 echo
 echo "Done. The run.invoker binding for sa-agent-orchestrator is applied by deploy-render.sh"
 echo "(the render service has to exist first). Verification:"
 echo "  gcloud services list --enabled | grep -E 'aiplatform|run|firestore|storage|secretmanager|eventarc'"
 echo "  gcloud firestore databases list; gcloud storage ls | grep smm-agent-assets"
-echo "  gcloud secrets list | grep slack-bot-token; gcloud iam service-accounts list | grep sa-"
+echo "  gcloud secrets list | grep telegram-bot-token; gcloud iam service-accounts list | grep sa-"
