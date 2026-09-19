@@ -1,12 +1,12 @@
 # SMM drafting agent
 
-Brief in → per-platform drafts + cover images → Slack notification for a human reviewer. No auto-publishing.
+Brief in → per-platform drafts + cover images → Telegram notification for a human reviewer. No auto-publishing.
 
 ```
 POST /briefs ─► brief-intake (Cloud Run) ─► Firestore jobs/{id}
                       │                          ▲   │ status change
                       ▼                          │   ▼
-             orchestrator-agent ──► render-service   notify-function ─► Slack
+             orchestrator-agent ──► render-service   notify-function ─► Telegram
              (Agent Engine, ADK)    (Cloud Run, Chromium)
 ```
 

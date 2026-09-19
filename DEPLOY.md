@@ -38,13 +38,13 @@ gcloud config get-value project
 - You need Owner or Editor on the project. Cloud Build also has to be allowed to build from source;
   see [Troubleshooting](#troubleshooting) if the first `--source` deploy is refused.
 
-**2. Create the Slack app** (about 5 minutes, only needed for step 4):
+**2. Create the Telegram bot** (about 5 minutes, only needed for step 4):
 
-1. <https://api.slack.com/apps> → *Create New App* → *From scratch*.
-2. *OAuth & Permissions* → Bot Token Scopes: `chat:write` and `files:write`.
-3. *Install to Workspace* and copy the **Bot User OAuth Token** (`xoxb-…`).
-4. In Slack, open the review channel and run `/invite @YourAppName`. The bot cannot post to a channel it isn't in.
-5. Get the channel ID: right-click the channel → *View channel details* → the ID at the bottom (`C0123456789`).
+1. In Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the **bot token** (`123456:ABC-…`).
+2. Open a chat with your new bot and press *Start* (a bot cannot message you until you have written to it first).
+   For a group instead: add the bot to the group and send any message there.
+3. Get the chat ID: open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser and read `"chat":{"id": …}`.
+   A private chat ID is a positive number; a group ID is negative (`-100…`). If `result` is empty, send the bot another message and reload.
 
 **3. Python 3.12 + the ADK CLI** (only needed for step 2, the agent deploy runs from your machine):
 
@@ -73,12 +73,12 @@ scripts/provision.sh
 
 This is the provisioning spec as an idempotent script (safe to re-run). It enables the APIs, creates
 the Firestore database (native mode, `us-central1`), the bucket `smm-agent-assets-<PROJECT_ID>` with a
-90-day delete rule, the empty `slack-bot-token` secret, the four service accounts and their roles.
+90-day delete rule, the empty `telegram-bot-token` secret, the four service accounts and their roles.
 
-Add the real Slack token to the secret. Type it in your own terminal so it stays out of files and git:
+Add the real bot token to the secret. Type it in your own terminal so it stays out of files and git:
 
 ```bash
-echo -n "xoxb-PASTE-YOUR-REAL-TOKEN" | gcloud secrets versions add slack-bot-token --data-file=-
+echo -n "PASTE-YOUR-BOT-TOKEN" | gcloud secrets versions add telegram-bot-token --data-file=-
 ```
 
 Verify (each command must print something):
@@ -87,7 +87,7 @@ Verify (each command must print something):
 gcloud services list --enabled | grep -E "aiplatform|run|firestore|storage|secretmanager|eventarc"
 gcloud firestore databases list
 gcloud storage ls | grep smm-agent-assets
-gcloud secrets versions list slack-bot-token
+gcloud secrets versions list telegram-bot-token
 gcloud iam service-accounts list | grep sa-
 ```
 
@@ -199,7 +199,7 @@ gcloud run services add-iam-policy-binding smm-brief-intake --region us-central1
 ## Step 4: notify-function
 
 ```bash
-SLACK_CHANNEL_ID=C0123456789 scripts/deploy-notify.sh
+TELEGRAM_CHAT_ID=123456789 scripts/deploy-notify.sh
 ```
 
 Deploys the 2nd gen function `smm-notify-reviewer` with a Firestore trigger: event
@@ -232,10 +232,10 @@ curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
 ```
 
 Or open `https://console.cloud.google.com/firestore/databases/-default-/data/panel/jobs/JOB_ID?project=<PROJECT>`.
-A Slack message with all drafts should appear in your channel, with the images attached in its thread.
+A Telegram message with the campaign name should appear in your chat, followed by one reply per platform draft and the rendered images as a photo album.
 
 **Failure path.** A brief that is well-formed but points at an image that doesn't exist should end in `failed`
-with a readable error, and still post to Slack:
+with a readable error, and still post to Telegram:
 
 ```bash
 sed 's#https://REPLACE-WITH-A-REAL-IMAGE.jpg#https://example.com/does-not-exist.jpg#' scripts/sample-brief.json > /tmp/bad-brief.json
@@ -243,7 +243,7 @@ scripts/smoke-test.sh /tmp/bad-brief.json
 ```
 
 A brief that is structurally invalid (missing `platforms`, unknown platform, malformed URL or colour) is rejected
-by intake with **HTTP 400** and a field-by-field message *before any job exists*, so there is no Slack message for it.
+by intake with **HTTP 400** and a field-by-field message *before any job exists*, so there is no Telegram message for it.
 See the note at the bottom.
 
 ---
@@ -256,7 +256,7 @@ See the note at the bottom.
 | render-service code | `scripts/deploy-render.sh` |
 | agent code or prompt | `AGENT_ENGINE_ID=<id> scripts/deploy-agent.sh` |
 | intake code | `scripts/deploy-intake.sh` |
-| notify code | `SLACK_CHANNEL_ID=… scripts/deploy-notify.sh` |
+| notify code | `TELEGRAM_CHAT_ID=… scripts/deploy-notify.sh` |
 
 If the render service URL ever changes (deleting and recreating it), redeploy the agent so it picks up the new `RENDER_SERVICE_URL`.
 
@@ -284,9 +284,11 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 | Job `failed`: "Could not run the drafting agent … 403/404" | Intake's `AGENT_ENGINE_RESOURCE` is wrong or `sa-brief-intake` lacks `roles/aiplatform.user`. Check `gcloud run services describe smm-brief-intake --region us-central1 --format='value(spec.template.spec.containers[0].env)'`. |
 | Job `failed` with a model "not found" or "not supported in location" error | Set `DRAFT_MODEL` (and possibly `DRAFT_MODEL_LOCATION=global`) as described in step 2. |
 | Job stuck on `drafting` | Read the agent logs (command above). Intake also marks a job `failed` if the agent run ends without finishing it. |
-| No Slack message, function logs show `not_in_channel` / `channel_not_found` | Invite the bot to the channel (`/invite @App`) and check `SLACK_CHANNEL_ID` is the ID, not the name. |
-| Function logs show `missing_scope` | Add `chat:write` and `files:write`, reinstall the app, and add the new token as a new secret version. |
+| No Telegram message, function logs show `chat not found` or `bot can't initiate conversation` | Press *Start* on the bot (or add it to the group), and check `TELEGRAM_CHAT_ID` is the numeric ID from `getUpdates`. |
+| Function logs show `Unauthorized` | The token in the secret is wrong. Add the correct one as a new secret version and redeploy (`scripts/deploy-notify.sh`) so the function re-reads it. |
 | Function logs show a Secret Manager permission error | `sa-notify-function` needs `roles/secretmanager.secretAccessor` on the secret and the secret needs a version. |
+| Deploy of the function fails with "Permission denied while using the Eventarc Service Agent" | First Eventarc use in the project; permissions take a few minutes to propagate. Wait and re-run `scripts/deploy-notify.sh`. |
+| Function logs / Cloud Run show 403 "request was not authenticated" | `sa-notify-function` lacks `roles/run.invoker` on `smm-notify-reviewer` (`deploy-notify.sh` grants it; re-run it). |
 | Function never triggers | Confirm the trigger exists: `gcloud eventarc triggers list --location=us-central1`. Then confirm `eventarc.googleapis.com` is enabled and the function's service account has `roles/eventarc.eventReceiver`. |
 | First render after idle is slow | Expected only if `min-instances` was lowered; the script keeps 1 warm instance. |
 
@@ -301,10 +303,10 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 ## Where this differs from the specs
 
 - **Invalid briefs get a 400 and no job.** The build spec says both "return 400 on invalid payload" (Service A) and "a
-  deliberately broken brief (missing platforms, bad URL) ends in `failed` and still produces a Slack notification"
+  deliberately broken brief (missing platforms, bad URL) ends in `failed` and still produces a Telegram notification"
   (acceptance criteria). They conflict for structurally invalid input. I followed Service A: structural problems get a 400;
-  problems found later (unreachable image, model or render errors) become `failed` + Slack. If you'd rather have every
-  bad brief create a `failed` job and ping Slack, that is a small change in `brief-intake/main.py`.
+  problems found later (unreachable image, model or render errors) become `failed` + Telegram. If you'd rather have every
+  bad brief create a `failed` job and ping Telegram, that is a small change in `brief-intake/main.py`.
 - `--allow-unauthenticated=false` in the spec is written `--no-allow-unauthenticated` in gcloud.
 - Added to the spec's commands: `--execution-environment gen2` (render), `--no-cpu-throttling` (intake),
   `--source`, `--entry-point` and the path pattern (notify), `ASSETS_BUCKET` on the render service.
@@ -316,13 +318,13 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 
 ## What has and hasn't been tested
 
-Tested locally (38 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
+Tested locally (40 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
 bad-image and injection cases), the agent pipeline end to end through ADK's runner with a fake Gemini, a fake render
 service and a fake Firestore, brief validation, and the notify function against real Firestore event protobufs
-with a fake Slack. Shell scripts are syntax-checked.
+with a fake Telegram API. Shell scripts are syntax-checked.
 
 Verified live on the author's project (steps 0 to 3): a brief posted to `brief-intake` returned a `job_id` with a 202,
 and about 50 seconds later the job was `ready_for_review` with 5 drafts and 5 PNGs at the exact platform sizes. A brief
 with an unreachable background image ended in `failed` with a readable per-platform error.
 
-**Not verified live:** step 4 (the Eventarc trigger and real Slack posting). Expect to fix small things on the first run.
+Step 4 was verified live too: a finished job produced a Telegram message with one reply per draft and a photo album of the images, and a `failed` job produced an error message. Two first-run issues showed up and are handled in the scripts and the table above: the Eventarc service agent can take a few minutes after first use (the deploy is refused with "Permission denied while using the Eventarc Service Agent"; just re-run it), and the function needs `run.invoker` for `sa-notify-function`, which `deploy-notify.sh` now grants. Eventarc redelivers events it could not deliver, so events that failed with 403 before the binding existed can arrive as duplicate messages.
