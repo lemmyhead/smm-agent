@@ -50,10 +50,18 @@ gcloud config get-value project
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install "google-adk==2.9.2"
+pip install "google-adk==2.9.2" "google-cloud-aiplatform[agent_engines,adk]"
 ```
 
 (`uv venv --python 3.12 .venv` works too if you use uv.) Leave the venv active for step 2.
+
+**4. Application Default Credentials** (also only for step 2). The ADK CLI uses Google's Python libraries, which
+don't reuse your `gcloud` login. Sign in once in the browser and point quota at your project:
+
+```bash
+gcloud auth application-default login
+gcloud auth application-default set-quota-project "$(gcloud config get-value project)"
+```
 
 ---
 
@@ -137,14 +145,14 @@ scripts/deploy-agent.sh
 What it does:
 
 1. Copies `platform_specs.yaml` into the agent package.
-2. Writes the agent's runtime settings: `orchestrator_agent/.env` (just `RENDER_SERVICE_URL`, looked up from step 1)
+2. Writes the agent's runtime settings: `orchestrator_agent/.env` (`RENDER_SERVICE_URL`, looked up from step 1, and `FIRESTORE_PROJECT_ID`, because inside Agent Engine the default project is the project *number*, which Firestore rejects)
    and `orchestrator_agent/.agent_engine_config.json` (display name `smm-orchestrator-agent`,
    runs as `sa-agent-orchestrator`, `min_instances: 0`).
 3. Lets the Agent Engine service agent act as `sa-agent-orchestrator`
    (`roles/iam.serviceAccountTokenCreator`, best effort, see Troubleshooting).
 4. Runs `adk deploy agent_engine --project … --region us-central1 --display_name smm-orchestrator-agent orchestrator_agent`,
    which builds a container with Cloud Build and creates the agent. This takes roughly 5–10 minutes.
-5. Saves the agent's resource name (`projects/<NUMBER>/locations/us-central1/reasoningEngines/<ID>`) to
+5. Saves the agent's resource name (`projects/<PROJECT>/locations/us-central1/reasoningEngines/<ID>`) to
    `.agent-engine-resource`, which step 3 reads.
 
 To **update** the agent later, pass the numeric ID at the end of that resource name so it updates in place
@@ -268,6 +276,9 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 | `gcloud run deploy --source` fails with a Cloud Build or Artifact Registry permission error | Newer projects run builds as the default Compute service account. Grant it the builder role: `gcloud projects add-iam-policy-binding $P --member="serviceAccount:$(gcloud projects describe $P --format='value(projectNumber)')-compute@developer.gserviceaccount.com" --role=roles/cloudbuild.builds.builder` |
 | Deploy says you lack `iam.serviceaccounts.actAs` | Your account needs `roles/iam.serviceAccountUser` on the service account being attached (Owner already has it). |
 | `deploy-agent.sh` fails on permissions / "service agent" | Run the script once (this creates the Agent Engine service agent), then run it again so the token-creator binding in step 3 of the script succeeds. Binding by hand: `gcloud iam service-accounts add-iam-policy-binding sa-agent-orchestrator@$P.iam.gserviceaccount.com --member="serviceAccount:service-<PROJECT_NUMBER>@gcp-sa-aiplatform-re.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator` |
+| Job `failed`: "The database (default) does not exist for project <number>" in the agent logs | The agent's `.env` is missing `FIRESTORE_PROJECT_ID` (redeploy with `scripts/deploy-agent.sh`; the script writes it). |
+| First `gcloud run deploy --source` asks to create an Artifact Registry repository `cloud-run-source-deploy` | Answer `Y`; it is a one-time prompt per project and region. |
+| `adk deploy` asks about telemetry | Optional; either answer is fine. |
 | Job `failed`: "render service returned 403" | The `run.invoker` binding for `sa-agent-orchestrator` is missing. Re-run `scripts/deploy-render.sh`. |
 | Job `failed`: "could not load image" | The logo or background URL isn't reachable from the internet, isn't an image, is over 15 MB, or is a `gs://` object `sa-render-service` cannot read (it only has access to the assets bucket). |
 | Job `failed`: "Could not run the drafting agent … 403/404" | Intake's `AGENT_ENGINE_RESOURCE` is wrong or `sa-brief-intake` lacks `roles/aiplatform.user`. Check `gcloud run services describe smm-brief-intake --region us-central1 --format='value(spec.template.spec.containers[0].env)'`. |
@@ -305,12 +316,13 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 
 ## What has and hasn't been tested
 
-Tested locally (38 automated tests): the render service in real Chromium (all four templates at exact pixel sizes,
+Tested locally (38 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
 bad-image and injection cases), the agent pipeline end to end through ADK's runner with a fake Gemini, a fake render
 service and a fake Firestore, brief validation, and the notify function against real Firestore event protobufs
 with a fake Slack. Shell scripts are syntax-checked.
 
-**Not tested, because nothing was deployed and no Docker or live GCP calls were made:** the container builds,
-the real Gemini call, the Agent Engine REST calls in `brief-intake/agent_client.py` (session creation and `:streamQuery`;
-if the first end-to-end run fails in `brief-intake`'s logs at "creating agent session", that file is where to look), IAM
-behaviour, the Eventarc trigger, and real Slack posting. Expect to fix small things on the first run.
+Verified live on the author's project (steps 0 to 3): a brief posted to `brief-intake` returned a `job_id` with a 202,
+and about 50 seconds later the job was `ready_for_review` with 5 drafts and 5 PNGs at the exact platform sizes. A brief
+with an unreachable background image ended in `failed` with a readable per-platform error.
+
+**Not verified live:** step 4 (the Eventarc trigger and real Slack posting). Expect to fix small things on the first run.

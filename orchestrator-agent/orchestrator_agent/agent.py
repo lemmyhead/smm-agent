@@ -76,8 +76,10 @@ drafter = LlmAgent(
 )
 
 
-def _text(event_text: str) -> Event:
-    return Event(author="smm_orchestrator", content=types.Content(role="model", parts=[types.Part(text=event_text)]))
+def _text(ctx: InvocationContext, event_text: str) -> Event:
+    # invocation_id is mandatory: Agent Engine's session store rejects events without it.
+    return Event(invocation_id=ctx.invocation_id, author="smm_orchestrator",
+                 content=types.Content(role="model", parts=[types.Part(text=event_text)]))
 
 
 def _parse_drafts(raw, platforms: list[str]) -> list[dict]:
@@ -124,6 +126,7 @@ class SMMOrchestrator(BaseAgent):
 
             # 1. Draft
             yield Event(
+                invocation_id=ctx.invocation_id,
                 author=self.name,
                 actions=EventActions(state_delta={
                     "brief": brief,
@@ -153,12 +156,12 @@ class SMMOrchestrator(BaseAgent):
                 raise RuntimeError("render failed for " + "; ".join(errors))
 
             await jobs.update_job(job_id, status="ready_for_review", error=None)
-            yield _text(f"Job {job_id}: {len(drafts)} drafts and images ready for review.")
+            yield _text(ctx, f"Job {job_id}: {len(drafts)} drafts and images ready for review.")
         except Exception as e:  # any failure ends in status=failed so the notify function fires
             log.exception("orchestration failed")
             if job_id:
                 await jobs.fail_job(job_id, f"{type(e).__name__}: {e}")
-            yield _text(f"Job {job_id or '?'} failed: {e}")
+            yield _text(ctx, f"Job {job_id or '?'} failed: {e}")
 
 
 root_agent = SMMOrchestrator(name="smm_orchestrator", drafter=drafter, sub_agents=[drafter])

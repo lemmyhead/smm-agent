@@ -4,7 +4,7 @@
 source "$(dirname "$0")/_env.sh"
 "$ROOT/scripts/sync-shared.sh"
 
-command -v adk >/dev/null || { echo "adk not found. Install it: python3.12 -m venv .venv && . .venv/bin/activate && pip install 'google-adk==2.9.2'" >&2; exit 1; }
+command -v adk >/dev/null || { echo "adk not found. Install it: python3.12 -m venv .venv && . .venv/bin/activate && pip install 'google-adk==2.9.2' 'google-cloud-aiplatform[agent_engines,adk]'" >&2; exit 1; }
 RENDER_URL="$(gcloud run services describe smm-render-service --region "$REGION" --format='value(status.url)')"
 [ -n "$RENDER_URL" ] || { echo "smm-render-service is not deployed yet: run deploy-render.sh first" >&2; exit 1; }
 
@@ -12,6 +12,7 @@ AGENT_DIR="$ROOT/orchestrator-agent/orchestrator_agent"
 # Runtime env vars for the agent (do NOT put GOOGLE_CLOUD_PROJECT/LOCATION here: reserved).
 cat > "$AGENT_DIR/.env" <<ENVEOF
 RENDER_SERVICE_URL=$RENDER_URL
+FIRESTORE_PROJECT_ID=$PROJECT_ID
 ENVEOF
 cat > "$AGENT_DIR/.agent_engine_config.json" <<CFGEOF
 {
@@ -37,11 +38,12 @@ EXTRA=()
 adk deploy agent_engine --project "$PROJECT_ID" --region "$REGION" \
   --display_name smm-orchestrator-agent ${EXTRA[@]+"${EXTRA[@]}"} orchestrator_agent 2>&1 | tee "$LOG"
 
-RESOURCE="$(grep -oE 'projects/[0-9]+/locations/[a-z0-9-]+/reasoningEngines/[0-9]+' "$LOG" | head -1 || true)"
+RESOURCE="$(grep -oE 'projects/[A-Za-z0-9_-]+/locations/[a-z0-9-]+/reasoningEngines/[0-9]+' "$LOG" | head -1 || true)"
 if [ -n "$RESOURCE" ]; then
   echo "$RESOURCE" > "$ROOT/.agent-engine-resource"
   echo "Agent resource saved to $ROOT/.agent-engine-resource: $RESOURCE"
 else
-  echo "Could not find the resource name in the output. List agents with:" >&2
+  echo "Deploy did not report a resource name, so it most likely failed (see the output above). To list existing agents:" >&2
   echo "  curl -s -H \"Authorization: Bearer \$(gcloud auth print-access-token)\" https://$REGION-aiplatform.googleapis.com/v1/projects/$PROJECT_ID/locations/$REGION/reasoningEngines" >&2
+  exit 1
 fi

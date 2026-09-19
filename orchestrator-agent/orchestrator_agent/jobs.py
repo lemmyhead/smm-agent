@@ -1,5 +1,6 @@
 """Firestore access for jobs/{job_id}. Kept thin so tests can patch these functions."""
 import logging
+import os
 from functools import lru_cache
 
 from google.cloud import firestore
@@ -9,7 +10,8 @@ log = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _db() -> firestore.AsyncClient:
-    return firestore.AsyncClient()
+    # Agent Engine's default project is the project number, which Firestore's data API rejects.
+    return firestore.AsyncClient(project=os.environ.get("FIRESTORE_PROJECT_ID") or None)
 
 
 def _ref(job_id: str):

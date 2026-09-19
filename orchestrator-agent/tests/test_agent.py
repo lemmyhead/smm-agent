@@ -88,9 +88,10 @@ async def run(reply: str, brief=BRIEF, message=None):
     runner = InMemoryRunner(agent=root, app_name="t")
     session = await runner.session_service.create_session(app_name="t", user_id="u")
     text = message if message is not None else json.dumps({"job_id": "job1", "brief": brief})
-    async for _ in runner.run_async(user_id="u", session_id=session.id,
-                                    new_message=types.Content(role="user", parts=[types.Part(text=text)])):
-        pass
+    async for event in runner.run_async(user_id="u", session_id=session.id,
+                                        new_message=types.Content(role="user", parts=[types.Part(text=text)])):
+        # Agent Engine's session service rejects events with no invocation_id (found on first deploy)
+        assert event.invocation_id, f"event from {event.author} has no invocation_id"
 
 
 def drafts_json(platforms, body="Big news! 30% off. Shop now https://example.com/sale"):
