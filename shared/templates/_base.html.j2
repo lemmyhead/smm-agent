@@ -51,8 +51,8 @@
 </style>
 </head>
 <body>
-  <div class="bg"></div>
-  <div class="shade"></div>
+  {% if background_image_data %}<div class="bg"></div>
+  <div class="shade"></div>{% endif %}
   <div class="content">
     <div>{% if logo_data %}<img class="logo" src="{{ logo_data }}" alt="">{% endif %}</div>
     <div>

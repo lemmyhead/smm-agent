@@ -86,6 +86,16 @@ def test_template_id_cannot_traverse(client):
     assert client.post("/render", json=body("../../etc/passwd", 1080, 1080)).status_code == 400
 
 
+def test_background_logo_and_brand_are_optional(client):
+    b = body("square_1x1", 1080, 1080)
+    for k in ("logo_url", "background_image_url", "primary_color", "accent_color", "font"):
+        del b["variables"][k]
+    r = client.post("/render", json=b)
+    assert r.status_code == 200, r.text
+    png = client.saved[r.json()["gcs_path"].rsplit("/", 1)[1]].read_bytes()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def test_bad_colour_is_400(client):
     r = client.post("/render", json=body("square_1x1", 1080, 1080, primary_color="red;}</style>"))
     assert r.status_code == 400

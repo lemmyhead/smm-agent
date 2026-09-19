@@ -145,11 +145,30 @@ def test_fields_sent_in_the_brief_win_over_saved_defaults(env, monkeypatch):
     assert brief["tone"] == "friendly"
 
 
-def test_missing_brand_without_saved_defaults_is_400(env):
+def test_tone_is_required_without_a_saved_voice_guide(env):
     client, fake, run = env
     b = copy.deepcopy(GOOD)
-    del b["brand"], b["tone"]
+    del b["tone"]
     r = client.post("/briefs", json=b)
-    fields = {d["field"] for d in r.json()["details"]}
-    assert r.status_code == 400 and {"brand.logo_url", "brand.font", "tone"} <= fields
+    assert r.status_code == 400 and {d["field"] for d in r.json()["details"]} == {"tone"}
     assert fake.docs == {} and not run.called
+
+
+def test_background_image_and_brand_are_optional(env):
+    client, fake, run = env
+    b = copy.deepcopy(GOOD)
+    del b["brand"], b["background_image_url"]
+    r = client.post("/briefs", json=b)
+    assert r.status_code == 202, r.text
+    brief = fake.docs[r.json()["job_id"]]["brief"]
+    assert brief["background_image_url"] is None and not any(brief["brand"].values())
+
+
+def test_a_partial_brand_is_accepted_but_what_is_given_is_still_checked(env):
+    client, fake, run = env
+    b = copy.deepcopy(GOOD)
+    b["brand"] = {"primary_color": "#abcdef"}
+    assert client.post("/briefs", json=b).status_code == 202
+    b["brand"] = {"logo_url": "ftp://nope"}
+    r = client.post("/briefs", json=b)
+    assert r.status_code == 400 and r.json()["details"][0]["field"] == "brand.logo_url"

@@ -141,9 +141,9 @@ def command(chat_id, text: str) -> None:
             tg_send(chat_id, briefs.format_draft(draft, store().get()))
         else:
             tg_send(chat_id, "Describe the campaign in a message, in any language: name, what the posts must say, "
-                             "the call to action, the link, and which platforms. Then send the background image "
-                             "(as a file for full quality). Colours, font, logo and tone come from your saved brand "
-                             "context, so you don't need to repeat them.\n\n"
+                             "the call to action, the link, and which platforms. You can also send a background image "
+                             "(as a file for full quality); without one the images get a plain background. Colours, "
+                             "font, logo and tone come from your saved brand context, so you don't need to repeat them.\n\n"
                              f"Platforms: {', '.join(briefs.PLATFORMS)}.")
     elif cmd == "/send":
         send_brief(chat_id, session.get("brief") or {})

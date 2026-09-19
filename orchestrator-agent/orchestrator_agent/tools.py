@@ -30,7 +30,7 @@ async def render_cover_image(platform: str, headline: str, tool_context: ToolCon
         raise ValueError(f"unknown platform {platform!r}")
     spec = specs[platform]
     brief = tool_context.state["brief"]
-    brand = brief["brand"]
+    brand = brief.get("brand") or {}
 
     base_url = os.environ.get("RENDER_SERVICE_URL", "").rstrip("/")
     if not base_url:
@@ -44,13 +44,15 @@ async def render_cover_image(platform: str, headline: str, tool_context: ToolCon
             "headline": headline,
             "cta": brief.get("cta") or "",
             "campaign_name": brief.get("campaign_name") or "",
-            "logo_url": brand["logo_url"],
-            "background_image_url": brief["background_image_url"],
-            "primary_color": brand["primary_color"],
-            "accent_color": brand["accent_color"],
-            "font": brand.get("font") or "Helvetica Neue",
+            "logo_url": brand.get("logo_url"),
+            "background_image_url": brief.get("background_image_url"),
+            "primary_color": brand.get("primary_color"),
+            "accent_color": brand.get("accent_color"),
+            "font": brand.get("font"),
         },
     }
+    # Anything the brief and the brand context leave out is omitted, so the render service applies its defaults.
+    payload["variables"] = {k: v for k, v in payload["variables"].items() if v is not None}
     headers = {}
     if not base_url.startswith(("http://localhost", "http://127.0.0.1")):
         headers["Authorization"] = f"Bearer {await asyncio.to_thread(_id_token, base_url)}"
