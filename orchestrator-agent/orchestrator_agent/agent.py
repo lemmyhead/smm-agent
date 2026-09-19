@@ -14,7 +14,7 @@ from google.adk.tools import ToolContext
 from google.genai import Client, types
 from pydantic import BaseModel, Field
 
-from . import jobs
+from . import brand, jobs
 from .specs import enforce_limit, load_specs, rules_text
 from .tools import render_tool
 
@@ -38,12 +38,26 @@ INSTRUCTION = """You are a social media copywriter. Write one draft per platform
 Brief (JSON):
 {brief_json}
 
+Brand voice guide (follow it; where it conflicts with the generic style notes below, the guide wins):
+{brand_voice}
+
+Extra writing rules from the brand's visual guidelines:
+{brand_copy_rules}
+
+Example posts written in the brand's voice (match their style and rhythm; never copy their wording):
+{brand_examples}
+{brand_images_note}
+
 Platforms and their hard limits:
 {platform_rules}
 
 Requirements:
 - Return exactly one draft for each listed platform, using the platform id exactly as written.
-- Match the brief's tone: follow it, do not invent a different brand voice.
+- Match the brief's tone and the brand voice guide: follow them, do not invent a different brand voice.
+  If the brief's tone is empty, the voice guide alone sets the tone.
+- Language: write in the language of the brand voice guide and the example posts (the brand's audience language),
+  unless the brief explicitly asks for another language. If there is no guide or examples, use the language of the
+  key message. Headlines and calls to action follow the same rule.
 - Work the key message and the call to action into every draft that has body copy. If the brief has a
   link, include it in the body where the platform allows links.
 - Adapt style per platform (Facebook: conversational; Instagram: visual, emoji sparingly; Threads: short and
@@ -67,12 +81,24 @@ def _model():
     return LocatedGemini(model=name)
 
 
+async def add_example_images(callback_context, llm_request):
+    """Attaches the brand's example screenshots to the drafting request (the instruction can only hold text)."""
+    uris = callback_context.state.get("brand_image_uris") or []
+    if not uris:
+        return None
+    parts = await brand.fetch_image_parts(uris)
+    llm_request.contents.append(types.Content(role="user", parts=[
+        types.Part(text="Screenshots of the brand's own posts (style reference only):"), *parts]))
+    return None
+
+
 drafter = LlmAgent(
     name="drafter",
     model=_model(),
     instruction=INSTRUCTION,
     output_schema=DraftSet,
     output_key="drafts_raw",
+    before_model_callback=add_example_images,
 )
 
 
@@ -125,6 +151,7 @@ class SMMOrchestrator(BaseAgent):
                 raise ValueError(f"unsupported platforms: {', '.join(unknown)}")
 
             # 1. Draft
+            context = await brand.load_context()
             yield Event(
                 invocation_id=ctx.invocation_id,
                 author=self.name,
@@ -132,6 +159,11 @@ class SMMOrchestrator(BaseAgent):
                     "brief": brief,
                     "brief_json": json.dumps(brief, ensure_ascii=False, indent=2),
                     "platform_rules": rules_text(platforms),
+                    "brand_voice": context.voice or brand.NONE_PROVIDED,
+                    "brand_copy_rules": context.copy_rules or brand.NONE_PROVIDED,
+                    "brand_examples": context.examples_text or brand.NONE_PROVIDED,
+                    "brand_image_uris": context.image_uris,
+                    "brand_images_note": "Screenshots of some of them follow this prompt." if context.image_uris else "",
                 }),
             )
             async for event in self.drafter.run_async(ctx):

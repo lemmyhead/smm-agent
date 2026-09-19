@@ -1,5 +1,6 @@
 """brief-intake: validate a brief, create the Firestore job, start the orchestrator."""
 import logging
+import os
 import uuid
 from functools import lru_cache
 
@@ -7,9 +8,10 @@ from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from google.cloud import firestore
+from pydantic import ValidationError
 
 import agent_client
-from models import Brief
+from models import Brief, BriefIn
 
 log = logging.getLogger("brief-intake")
 logging.basicConfig(level=logging.INFO)
@@ -22,11 +24,31 @@ def db() -> firestore.Client:
     return firestore.Client()
 
 
+def invalid(errors) -> JSONResponse:
+    details = [{"field": ".".join(str(p) for p in e["loc"] if p != "body") or "body", "message": e["msg"]}
+               for e in errors]
+    return JSONResponse(status_code=400, content={"error": "invalid brief", "details": details})
+
+
 @app.exception_handler(RequestValidationError)
 async def invalid_brief(_: Request, exc: RequestValidationError):
-    details = [{"field": ".".join(str(p) for p in e["loc"] if p != "body") or "body", "message": e["msg"]}
-               for e in exc.errors()]
-    return JSONResponse(status_code=400, content={"error": "invalid brief", "details": details})
+    return invalid(exc.errors())
+
+
+def brand_defaults() -> dict:
+    """The saved brand context (brandctx), or {} if none has been saved."""
+    snap = db().collection("brand").document(os.environ.get("BRAND_PROFILE", "default")).get()
+    return (snap.to_dict() or {}) if snap.exists else {}
+
+
+def with_defaults(raw: dict, saved: dict) -> dict:
+    """Fills a missing brand block / tone from the saved brand context. Fields the caller sent win."""
+    out = dict(raw)
+    saved_brand = (saved.get("visual") or {}).get("brand") or {}
+    out["brand"] = {**saved_brand, **(raw.get("brand") or {})}
+    if not (raw.get("tone") or "").strip() and (saved.get("voice") or {}).get("text"):
+        out["tone"] = "as described in the brand voice guide"
+    return out
 
 
 def fail(job_id: str, message: str) -> None:
@@ -56,7 +78,11 @@ def healthz():
 
 
 @app.post("/briefs", status_code=202)
-def create_brief(brief: Brief, background: BackgroundTasks):
+def create_brief(raw: BriefIn, background: BackgroundTasks):
+    try:
+        brief = Brief.model_validate(with_defaults(raw.model_dump(exclude_none=True), brand_defaults()))
+    except ValidationError as e:
+        return invalid(e.errors())
     job_id = str(uuid.uuid4())
     data = brief.model_dump(mode="json")
     db().collection("jobs").document(job_id).set({

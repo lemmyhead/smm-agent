@@ -12,3 +12,5 @@ __pycache__/
 orchestrator-agent/orchestrator_agent/.env
 orchestrator-agent/orchestrator_agent/.agent_engine_config.json
 .agent-engine-resource
+brand-proposal.json
+telegram-intake/brandcore.py

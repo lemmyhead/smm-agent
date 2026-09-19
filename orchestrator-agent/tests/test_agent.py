@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from orchestrator_agent import agent as agent_mod  # noqa: E402
-from orchestrator_agent import jobs, tools  # noqa: E402
+from orchestrator_agent import brand, jobs, tools  # noqa: E402
 from orchestrator_agent.specs import enforce_limit, load_specs  # noqa: E402
 
 BRIEF = {
@@ -32,9 +32,11 @@ BRIEF = {
 class FakeLlm(BaseLlm):
     reply: str = ""
     seen_prompt: str = ""
+    seen_contents: list = []
 
     async def generate_content_async(self, llm_request, stream=False):
         FakeLlm.seen_prompt = str(llm_request.config.system_instruction)
+        FakeLlm.seen_contents = list(llm_request.contents)
         yield LlmResponse(content=types.Content(role="model", parts=[types.Part(text=self.reply)]))
 
 
@@ -62,6 +64,24 @@ def db(monkeypatch):
     return d
 
 
+@pytest.fixture(autouse=True)
+def brand_ctx(monkeypatch):
+    """Firestore's brand/default document: empty unless a test sets `brand_ctx.ctx`."""
+    holder = type("H", (), {"ctx": brand.BrandContext(), "fail_images": False})()
+
+    async def load():
+        return holder.ctx
+
+    async def images(uris):
+        if holder.fail_images:
+            raise RuntimeError(f"could not read brand example image {uris[0]}: 404")
+        return [types.Part.from_bytes(data=b"\x89PNG-fake", mime_type="image/png") for _ in uris]
+
+    monkeypatch.setattr(brand, "load_context", load)
+    monkeypatch.setattr(brand, "fetch_image_parts", images)
+    return holder
+
+
 @pytest.fixture()
 def render(monkeypatch):
     calls = []
@@ -83,7 +103,8 @@ def render(monkeypatch):
 async def run(reply: str, brief=BRIEF, message=None):
     llm = FakeLlm(model="fake", reply=reply)
     drafter = LlmAgent(name="drafter", model=llm, instruction=agent_mod.INSTRUCTION,
-                       output_schema=agent_mod.DraftSet, output_key="drafts_raw")
+                       output_schema=agent_mod.DraftSet, output_key="drafts_raw",
+                       before_model_callback=agent_mod.add_example_images)
     root = agent_mod.SMMOrchestrator(name="smm_orchestrator", drafter=drafter, sub_agents=[drafter])
     runner = InMemoryRunner(agent=root, app_name="t")
     session = await runner.session_service.create_session(app_name="t", user_id="u")
@@ -152,3 +173,45 @@ def test_enforce_limit():
     assert enforce_limit("anything", 0) == ""
     assert len(enforce_limit("a b " * 400, 100)) <= 100
     assert set(load_specs()) == {"facebook", "instagram_feed", "instagram_story", "threads", "youtube_community"}
+
+
+async def test_brand_context_reaches_the_drafting_prompt(db, render, brand_ctx):
+    brand_ctx.ctx = brand.from_doc({
+        "voice": {"text": "Never use exclamation marks. Sound like a friendly neighbour."},
+        "examples": [{"type": "text", "text": "Tea is ready. Come by."},
+                     {"type": "image", "gcs_path": "gs://b/brand/default/examples/a.png"}],
+        "visual": {"copy_rules": ["Say 'colour', never 'color'"]},
+    })
+    await run(drafts_json(["threads", "facebook", "instagram_story"]))
+    assert db.doc["status"] == "ready_for_review"
+    p = FakeLlm.seen_prompt
+    assert "Never use exclamation marks" in p and "Example 1:\nTea is ready. Come by." in p
+    assert "Say 'colour', never 'color'" in p and "Screenshots of some of them follow" in p
+    assert "write in the language of the brand voice guide" in p
+    sent = [part for c in FakeLlm.seen_contents for part in (c.parts or [])]
+    assert any(part.inline_data and part.inline_data.mime_type == "image/png" for part in sent)
+
+
+async def test_without_brand_context_the_prompt_says_none_provided(db, render):
+    await run(drafts_json(["threads", "facebook", "instagram_story"]))
+    assert db.doc["status"] == "ready_for_review"
+    assert FakeLlm.seen_prompt.count("(none provided)") == 3
+    assert not any(part.inline_data for c in FakeLlm.seen_contents for part in (c.parts or []))
+
+
+async def test_unreadable_example_image_fails_job_clearly(db, render, brand_ctx):
+    brand_ctx.ctx = brand.BrandContext(image_uris=["gs://b/brand/default/examples/gone.png"])
+    brand_ctx.fail_images = True
+    await run(drafts_json(["threads", "facebook", "instagram_story"]))
+    assert db.doc["status"] == "failed" and "gone.png" in db.doc["error"]
+    assert render == []
+
+
+def test_brand_context_from_firestore_doc():
+    ctx = brand.from_doc({})
+    assert (ctx.voice, ctx.examples_text, ctx.copy_rules, ctx.image_uris) == ("", "", "", [])
+    ctx = brand.from_doc({"voice": {"text": " v "}, "examples": [
+        {"type": "text", "text": "a"}, {"type": "text", "text": "b"},
+        {"type": "image", "gcs_path": "gs://x/y.png", "name": "y.png"}]})
+    assert ctx.voice == "v" and ctx.examples_text == "Example 1:\na\n\nExample 2:\nb"
+    assert ctx.image_uris == ["gs://x/y.png"]

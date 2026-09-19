@@ -10,6 +10,7 @@ Four services, deployed in this order. Every command below is wrapped in a scrip
 | 2 | `orchestrator-agent` | Vertex AI Agent Engine (ADK) | `smm-orchestrator-agent` | `sa-agent-orchestrator` | `scripts/deploy-agent.sh` |
 | 3 | `brief-intake` | Cloud Run | `smm-brief-intake` | `sa-brief-intake` | `scripts/deploy-intake.sh` |
 | 4 | `notify-function` | Cloud Function (2nd gen) | `smm-notify-reviewer` | `sa-notify-function` | `scripts/deploy-notify.sh` |
+| 5 | `telegram-intake` (optional) | Cloud Run, public webhook | `smm-telegram-intake` | `sa-telegram-intake` | `scripts/deploy-telegram.sh` |
 
 Order matters: the agent needs the render service's URL, and intake needs the agent's resource name.
 The notify function only needs Firestore, so it can go any time after step 0.
@@ -73,7 +74,7 @@ scripts/provision.sh
 
 This is the provisioning spec as an idempotent script (safe to re-run). It enables the APIs, creates
 the Firestore database (native mode, `us-central1`), the bucket `smm-agent-assets-<PROJECT_ID>` with a
-90-day delete rule, the empty `telegram-bot-token` secret, the four service accounts and their roles.
+90-day delete rule on `renders/`, the empty `telegram-bot-token` secret, the four service accounts and their roles.
 
 Add the real bot token to the secret. Type it in your own terminal so it stays out of files and git:
 
@@ -212,6 +213,98 @@ The spec's command has no path pattern (it would fire for every document in the 
 
 ---
 
+## Step 5 (optional): brand context
+
+Teach the agent your brand once, so a brief only needs the campaign details. The context lives in Firestore
+(`brand/default`); the original files are kept under `gs://smm-agent-assets-<PROJECT>/brand/default/` (the 90-day
+delete rule only applies to `renders/`, so these stay).
+
+What each piece does:
+
+| You give it | What the agent does with it |
+|---|---|
+| Tone-of-voice guide (`.md`, `.txt`, `.rtf` or PDF) | The whole text goes into the drafting prompt on every run. A PDF is transcribed to markdown by Gemini when you upload it, so you can check what was read. Limit 30,000 characters. |
+| Example posts (text files with posts separated by a line of `---`, and/or screenshots `.png/.jpg/.webp`) | Text examples are shown to the drafter as style references; screenshots are attached to the drafting request as images (Gemini reads them). Up to 12 screenshots of 4 MB each. |
+| Visual-guidelines PDF | Gemini extracts the primary and accent colour and the font, which become the **default brand block**. It also lists your layout, logo and imagery rules so you can see what needs manual template work. Writing rules it finds are added to the drafting prompt. |
+| Logo image | Becomes the default `brand.logo_url`. |
+
+### Through the Telegram bot (no terminal needed)
+
+```bash
+TELEGRAM_ALLOWED_CHAT_IDS=<your chat id> scripts/deploy-telegram.sh
+```
+
+Deploys `smm-telegram-intake` and points your bot's webhook at it (this replaces the `getUpdates` URL you used to find
+your chat ID; that URL stops returning messages once a webhook is set). Then chat with your bot:
+
+| You send | What happens |
+|---|---|
+| `/voice`, then the file (or paste the text) | Saved. A PDF is transcribed and the start of it is echoed back so you can check it. |
+| `/examples`, then captions (one message each), a `.txt` file, or screenshots, then `/done` | Saved. `/examples add` keeps the ones already there. |
+| `/guidelines`, then the PDF | It replies with the colours, font, palette and rules it found, and a **NEEDS MANUAL TEMPLATE WORK** list. **Nothing is saved yet.** |
+| `/set primary #1f4d3a`, `/set accent #f2b134`, `/set font Lora` | Correct the proposal, then `/save` to keep it (or `/cancel`). |
+| `/logo`, then the image | Saved as the default logo. |
+| `/show`, `/show full`, `/clear` | See what is saved / delete everything (asks you to confirm). |
+
+Because this service must be reachable by Telegram, it is **public**, unlike the others. It is protected three ways:
+requests must carry Telegram's secret-token header (a random value in the `telegram-webhook-secret` secret; anything
+else gets 401), the bot answers only the chat IDs in `TELEGRAM_ALLOWED_CHAT_IDS` and stays silent for everyone else, and its
+service account can only touch the assets bucket and the two secrets. The API docs pages are switched off. Bots can only
+download files up to 20 MB. Chat ID list: comma-separate several.
+
+### From a terminal instead
+
+Run these from the repo root. They use your own login (step 4 above) and the packages in `brand-context/requirements.txt`
+(`pip install -r brand-context/requirements.txt` in the same venv as the ADK):
+
+```bash
+scripts/brand-context.sh voice ~/Documents/tone-of-voice.pdf
+scripts/brand-context.sh examples ~/Documents/posts.txt ~/Documents/screenshots/*.png
+scripts/brand-context.sh extract ~/Documents/visual-guidelines.pdf     # writes brand-proposal.json and prints it
+```
+
+`extract` saves nothing yet. It prints the colours, font, palette and rules it found, plus a list headed
+**NEEDS MANUAL TEMPLATE WORK** (layout, logo and imagery rules cannot be applied automatically; they need edits to
+`shared/templates/*.html.j2`). Correct `brand-proposal.json` if anything is wrong, then save it and add the logo:
+
+```bash
+scripts/brand-context.sh apply brand-proposal.json
+scripts/brand-context.sh logo ~/Documents/logo.png
+scripts/brand-context.sh show            # add --full to read everything the drafter will see
+```
+
+Then deploy the two services that read it:
+
+```bash
+AGENT_ENGINE_ID=<id> scripts/deploy-agent.sh    # the drafter reads voice, examples and writing rules
+scripts/deploy-intake.sh                        # intake fills in the default brand block and tone
+```
+
+Afterwards a brief can drop `brand` and `tone`:
+
+```json
+{"campaign_name": "Spring Sale", "key_message": "…", "cta": "Shop now",
+ "background_image_url": "https://…/photo.jpg", "platforms": ["facebook", "threads"]}
+```
+
+**Language.** The drafter writes in the language of the voice guide and example posts, unless the brief explicitly asks
+for another language; with no guide and no examples it uses the language of the key message. (Change the "Language" line
+in `INSTRUCTION` in `orchestrator-agent/orchestrator_agent/agent.py` if you want a different rule.)
+
+**File formats.** Rich-text (`.rtf`) files, for example saved from TextEdit, are converted to plain text automatically, even
+if they were saved with a `.txt` extension. One example post can be at most 5,000 characters; a longer file is refused
+with a hint to put a line containing only `---` between posts. Screenshot and text examples together are capped at
+12 screenshots and 30,000 characters, and the check is atomic, so files sent at the same moment cannot slip past it.
+
+Anything you do put in the brief wins: a partial `brand` (for example only `primary_color`) overrides just that field and
+keeps the rest of the defaults. `tone`, if given, is used together with the voice guide. Without a saved brand block, a
+brief must still contain the whole `brand`; without a voice guide it must contain `tone`. Either gap is a 400 that names the fields.
+
+Re-run any command to replace what it saved (`examples --add` keeps the existing ones). `scripts/brand-context.sh clear --yes`
+deletes the saved context and its files. `BRAND_PROFILE` (default `default`) selects which profile the agent and intake read.
+
+---
+
 ## Test the whole pipeline
 
 Edit `scripts/sample-brief.json`: replace the two `REPLACE-WITH-A-REAL-…` URLs with a real logo and a real
@@ -256,6 +349,7 @@ See the note at the bottom.
 | render-service code | `scripts/deploy-render.sh` |
 | agent code or prompt | `AGENT_ENGINE_ID=<id> scripts/deploy-agent.sh` |
 | intake code | `scripts/deploy-intake.sh` |
+| brand context (voice, examples, guidelines) | `scripts/brand-context.sh …`, no redeploy: the agent and intake read it on every request |
 | notify code | `TELEGRAM_CHAT_ID=… scripts/deploy-notify.sh` |
 
 If the render service URL ever changes (deleting and recreating it), redeploy the agent so it picks up the new `RENDER_SERVICE_URL`.
@@ -283,6 +377,8 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 | Job `failed`: "could not load image" | The logo or background URL isn't reachable from the internet, isn't an image, is over 15 MB, or is a `gs://` object `sa-render-service` cannot read (it only has access to the assets bucket). |
 | Job `failed`: "Could not run the drafting agent … 403/404" | Intake's `AGENT_ENGINE_RESOURCE` is wrong or `sa-brief-intake` lacks `roles/aiplatform.user`. Check `gcloud run services describe smm-brief-intake --region us-central1 --format='value(spec.template.spec.containers[0].env)'`. |
 | Job `failed` with a model "not found" or "not supported in location" error | Set `DRAFT_MODEL` (and possibly `DRAFT_MODEL_LOCATION=global`) as described in step 2. |
+| Job `failed`: "could not read brand example image … serviceusage.services.use" | `sa-agent-orchestrator` needs `roles/serviceusage.serviceUsageConsumer` (`scripts/provision.sh` grants it). |
+| The bot does not answer | Check `getWebhookInfo` for `last_error_message` (`curl https://api.telegram.org/bot<TOKEN>/getWebhookInfo`), confirm your chat ID is in `TELEGRAM_ALLOWED_CHAT_IDS` (the bot ignores every other chat silently), and read the logs: `gcloud run services logs read smm-telegram-intake --region us-central1 --limit 30`. |
 | Job stuck on `drafting` | Read the agent logs (command above). Intake also marks a job `failed` if the agent run ends without finishing it. |
 | No Telegram message, function logs show `chat not found` or `bot can't initiate conversation` | Press *Start* on the bot (or add it to the group), and check `TELEGRAM_CHAT_ID` is the numeric ID from `getUpdates`. |
 | Function logs show `Unauthorized` | The token in the secret is wrong. Add the correct one as a new secret version and redeploy (`scripts/deploy-notify.sh`) so the function re-reads it. |
@@ -296,7 +392,7 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 
 - `smm-render-service` keeps one 2-CPU / 2 GiB instance running all the time (`min-instances=1`, as the spec asks).
   It's the biggest fixed cost here. Setting it to 0 saves that, at the price of a slow first request.
-- `smm-brief-intake` uses instance-based billing (`--no-cpu-throttling`); it scales to zero when idle, so it is only billed while running.
+- `smm-telegram-intake` and `smm-brief-intake` use instance-based billing (`--no-cpu-throttling`); they scale to zero when idle, so they are only billed while running.
 - The agent has `min_instances: 0`; Gemini and Cloud Build usage is billed per use.
 - Rendered PNGs are deleted after 90 days by the bucket lifecycle rule.
 
@@ -307,10 +403,13 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
   (acceptance criteria). They conflict for structurally invalid input. I followed Service A: structural problems get a 400;
   problems found later (unreachable image, model or render errors) become `failed` + Telegram. If you'd rather have every
   bad brief create a `failed` job and ping Telegram, that is a small change in `brief-intake/main.py`.
+- `smm-telegram-intake` is public (not in the spec): Telegram cannot present a Google identity token. See step 5 for how it is locked down.
 - `--allow-unauthenticated=false` in the spec is written `--no-allow-unauthenticated` in gcloud.
 - Added to the spec's commands: `--execution-environment gen2` (render), `--no-cpu-throttling` (intake),
   `--source`, `--entry-point` and the path pattern (notify), `ASSETS_BUCKET` on the render service.
 - `gcloud storage` replaces `gsutil` in `provision.sh` (same result).
+- The 90-day lifecycle rule only applies to objects under `renders/`, not the whole bucket, so the brand files stored in it are not deleted.
+- `brand` and `tone` may be left out of a brief when a brand context has been saved (step 5); intake fills them in. Without saved defaults they are required, as in the spec.
 - The agent is deployed with the `adk deploy agent_engine` CLI, not a hand-written `agent_engines.create(...)` call.
   This ADK version (2.9.2) deploys a container built from your agent folder, and the CLI is the documented path.
 - Copy limits apply to the post `body` only (not headline or hashtags). If the model overshoots, the body is cut at a
@@ -318,7 +417,7 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 
 ## What has and hasn't been tested
 
-Tested locally (40 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
+Tested locally (90 automated tests): the render service in real Chromium (all templates at exact pixel sizes,
 bad-image and injection cases), the agent pipeline end to end through ADK's runner with a fake Gemini, a fake render
 service and a fake Firestore, brief validation, and the notify function against real Firestore event protobufs
 with a fake Telegram API. Shell scripts are syntax-checked.
@@ -326,5 +425,7 @@ with a fake Telegram API. Shell scripts are syntax-checked.
 Verified live on the author's project (steps 0 to 3): a brief posted to `brief-intake` returned a `job_id` with a 202,
 and about 50 seconds later the job was `ready_for_review` with 5 drafts and 5 PNGs at the exact platform sizes. A brief
 with an unreachable background image ended in `failed` with a readable per-platform error.
+
+Step 5 (brand context) was verified live with made-up brand documents: a voice guide PDF was transcribed, a visual-guidelines PDF produced the right colours, font and rule lists, and a brief with no `brand` and no `tone` came back `ready_for_review` with drafts that followed the voice guide (no exclamation marks, British spelling, the required sign-off) and images in the saved colours and font. It needed one extra permission that `provision.sh` now grants: `roles/serviceusage.serviceUsageConsumer` on `sa-agent-orchestrator`, because Agent Engine bills Cloud Storage reads to the project (without it the job fails with "serviceusage.services.use" when a screenshot is read).
 
 Step 4 was verified live too: a finished job produced a Telegram message with one reply per draft and a photo album of the images, and a `failed` job produced an error message. Two first-run issues showed up and are handled in the scripts and the table above: the Eventarc service agent can take a few minutes after first use (the deploy is refused with "Permission denied while using the Eventarc Service Agent"; just re-run it), and the function needs `run.invoker` for `sa-notify-function`, which `deploy-notify.sh` now grants. Eventarc redelivers events it could not deliver, so events that failed with 403 before the binding existed can arrive as duplicate messages.

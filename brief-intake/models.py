@@ -43,6 +43,15 @@ class Brand(BaseModel):
         return v
 
 
+class BriefIn(BaseModel):
+    """What callers send. `brand` and `tone` may be left out when a default brand context has been saved
+    (brand-context/brandctx.py); intake fills the gaps and then validates the result as a full Brief."""
+    brand: Optional[dict] = None
+    tone: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
 class Brief(BaseModel):
     campaign_name: str = Field(min_length=1, max_length=200)
     key_message: str = Field(min_length=1, max_length=2000)
