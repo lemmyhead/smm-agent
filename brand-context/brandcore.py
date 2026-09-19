@@ -17,6 +17,7 @@ MAX_VOICE_CHARS = 30_000
 MAX_EXAMPLE_CHARS = 30_000
 MAX_EXAMPLE_IMAGES = 12
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_BACKGROUND_BYTES = 20 * 1024 * 1024
 MAX_PDF_BYTES = 20 * 1024 * 1024
 TEXT_EXT = {".txt", ".md", ".markdown", ".rtf"}
 MAX_POST_CHARS = 5_000  # an Instagram caption is at most 2,200; more than this is a whole document, not one post
@@ -220,7 +221,10 @@ class Store:
         return run(self._db.transaction())
 
     def upload(self, name: str, data: bytes, ctype: str) -> str:
-        path = f"brand/{self.profile}/{name}"
+        return self.upload_path(f"brand/{self.profile}/{name}", data, ctype)
+
+    def upload_path(self, path: str, data: bytes, ctype: str) -> str:
+        """Uploads to any path in the assets bucket (used for campaign background images)."""
         self._gcs.bucket(self.bucket_name).blob(path).upload_from_string(data, content_type=ctype)
         return f"gs://{self.bucket_name}/{path}"
 

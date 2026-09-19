@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploys smm-telegram-intake (the bot that manages the brand context) and points the Telegram webhook at it.
+# Deploys smm-telegram-intake (the bot that manages the brand context and takes briefs) and points the Telegram webhook at it.
 # Usage: TELEGRAM_ALLOWED_CHAT_IDS=440581589 scripts/deploy-telegram.sh     (comma-separate several chat ids)
 # Needs the token already stored in the telegram-bot-token secret (DEPLOY.md step 0).
 #
@@ -17,6 +17,13 @@ if ! gcloud secrets versions list telegram-webhook-secret --filter="state=enable
   echo "generated a new webhook secret"
 fi
 
+INTAKE_URL="$(gcloud run services describe smm-brief-intake --region "$REGION" --format='value(status.url)' 2>/dev/null)"
+[ -n "$INTAKE_URL" ] || { echo "smm-brief-intake is not deployed yet (run scripts/deploy-intake.sh first)" >&2; exit 1; }
+# The bot submits briefs to the private brief-intake service as its own service account.
+gcloud run services add-iam-policy-binding smm-brief-intake --region "$REGION" \
+  --member="serviceAccount:$(sa sa-telegram-intake)" --role=roles/run.invoker >/dev/null
+echo "sa-telegram-intake -> run.invoker on smm-brief-intake"
+
 # --no-cpu-throttling: files are processed (Gemini calls) after the 200 has been returned to Telegram.
 # The ^@^ prefix makes '@' the separator so the chat id list can contain commas.
 gcloud run deploy smm-telegram-intake \
@@ -24,7 +31,7 @@ gcloud run deploy smm-telegram-intake \
   --service-account "$(sa sa-telegram-intake)" \
   --no-cpu-throttling --memory 512Mi --max-instances 2 \
   --allow-unauthenticated \
-  --set-env-vars "^@^PROJECT_ID=$PROJECT_ID@TELEGRAM_ALLOWED_CHAT_IDS=$TELEGRAM_ALLOWED_CHAT_IDS" \
+  --set-env-vars "^@^PROJECT_ID=$PROJECT_ID@BRIEF_INTAKE_URL=$INTAKE_URL@TELEGRAM_ALLOWED_CHAT_IDS=$TELEGRAM_ALLOWED_CHAT_IDS" \
   --set-secrets "TELEGRAM_BOT_TOKEN=telegram-bot-token:latest,TELEGRAM_WEBHOOK_SECRET=telegram-webhook-secret:latest"
 
 URL="$(gcloud run services describe smm-telegram-intake --region "$REGION" --format='value(status.url)')"

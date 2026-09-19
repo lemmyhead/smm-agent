@@ -1,9 +1,10 @@
 """telegram-intake: Telegram webhook. Chat with the bot to manage the brand context (voice guide, example posts,
-visual guidelines, logo). Only chats listed in TELEGRAM_ALLOWED_CHAT_IDS are answered, and every request must carry
+visual guidelines, logo) and to submit campaign briefs. Only chats listed in TELEGRAM_ALLOWED_CHAT_IDS are answered, and every request must carry
 Telegram's secret-token header, because this Cloud Run service has to be publicly reachable."""
 import hmac
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
@@ -13,6 +14,7 @@ from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 
 import brandcore as core
+import briefs
 
 log = logging.getLogger("telegram-intake")
 logging.basicConfig(level=logging.INFO)
@@ -24,13 +26,15 @@ MESSAGE_LIMIT = 4000  # Telegram text max is 4096
 
 HELP = """I keep your brand context so briefs only need the campaign details.
 
+/brief: start a campaign brief. Describe it in a message, send the background image, then /send. The drafts and images arrive here when ready
+
 /voice: send the tone-of-voice guide (PDF, .md, .txt, .rtf, or paste the text)
 /examples: send example posts (text messages, a .txt file with posts separated by ---, or screenshots), then /done. Use "/examples add" to keep the ones already saved
 /guidelines: send the visual-guidelines PDF; I show what I found so you can correct it, then /save
 /logo: send the logo as a file (a photo works too)
 /show: what is saved ("/show full" for everything)
 /clear: delete everything saved
-/cancel: forget the current step"""
+/cancel: forget the current step or brief draft"""
 
 
 # ---------- configuration and Telegram I/O (patched in tests) ----------
@@ -128,6 +132,21 @@ def command(chat_id, text: str) -> None:
 
     if cmd in ("/start", "/help"):
         tg_send(chat_id, HELP)
+    elif cmd == "/brief":
+        if arg.lower() == "new" or "brief" not in session:
+            session_put(chat_id, brief={})
+        session_put(chat_id, mode="brief")
+        draft = session_get(chat_id).get("brief") or {}
+        if draft:
+            tg_send(chat_id, briefs.format_draft(draft, store().get()))
+        else:
+            tg_send(chat_id, "Describe the campaign in a message, in any language: name, what the posts must say, "
+                             "the call to action, the link, and which platforms. Then send the background image "
+                             "(as a file for full quality). Colours, font, logo and tone come from your saved brand "
+                             "context, so you don't need to repeat them.\n\n"
+                             f"Platforms: {', '.join(briefs.PLATFORMS)}.")
+    elif cmd == "/send":
+        send_brief(chat_id, session.get("brief") or {})
     elif cmd == "/voice":
         session_put(chat_id, mode="voice")
         tg_send(chat_id, "Send the tone-of-voice guide as a PDF, .md, .txt or .rtf file, or paste it here as one message "
@@ -150,7 +169,7 @@ def command(chat_id, text: str) -> None:
         examples = store().get().get("examples") or []
         tg_send(chat_id, f"Done. Saved: {counts(examples)}." if session.get("mode") == "examples" else "Okay.")
     elif cmd == "/cancel":
-        session_put(chat_id, mode=None, pending=None)
+        session_put(chat_id, mode=None, pending=None, brief=None)
         tg_send(chat_id, "Cancelled. Nothing further was saved.")
     elif cmd == "/set":
         pending = session.get("pending")
@@ -183,8 +202,30 @@ def command(chat_id, text: str) -> None:
         tg_send(chat_id, "I don't know that command. /help lists what I can do.")
 
 
+def update_brief(chat_id, text: str | None = None, **fields) -> None:
+    draft = session_get(chat_id).get("brief") or {}
+    if text:
+        draft = briefs.parse(ai(), text, draft)
+    draft.update(fields)
+    session_put(chat_id, brief=draft)
+    tg_send(chat_id, briefs.format_draft(draft, store().get()))
+
+
+def send_brief(chat_id, draft: dict) -> None:
+    if not draft:
+        raise core.BrandError("There is no brief in progress. Send /brief to start one.")
+    need = briefs.missing(draft, store().get())
+    if need:
+        raise core.BrandError("The brief is not complete yet. Still needed: " + "; ".join(need) + ".")
+    job_id = briefs.submit(draft)
+    session_put(chat_id, mode=None, brief=None)
+    tg_send(chat_id, f"Started job {job_id[:8]}. The drafts and images will arrive in this chat in a few minutes.")
+
+
 def on_text(chat_id, mode: str | None, text: str) -> None:
-    if mode == "voice":
+    if mode == "brief":
+        update_brief(chat_id, text)
+    elif mode == "voice":
         saved = core.save_voice_text(store(), "voice.txt", text)
         session_put(chat_id, mode=None)
         tg_send(chat_id, f"Saved the voice guide ({len(saved):,} characters). /show full to read it back.")
@@ -201,10 +242,19 @@ def add_examples(chat_id, items: list[dict]) -> None:
 
 def on_file(chat_id, mode: str | None, name: str, fetch) -> None:
     if mode is None:
-        tg_send(chat_id, "I got a file but don't know what it is for. Send /voice, /examples, /guidelines or /logo "
-                         "first, then the file.")
+        tg_send(chat_id, "I got a file but don't know what it is for. Send /brief, /voice, /examples, /guidelines "
+                         "or /logo first, then the file.")
         return
-    if mode == "voice":
+    if mode == "brief":
+        ext = core.ext_of(name)
+        if ext not in core.IMAGE_EXT:
+            raise core.BrandError("the background must be a .png, .jpg or .webp image")
+        data = fetch()
+        core.check_size(name, data, core.MAX_BACKGROUND_BYTES)
+        uri = store().upload_path(f"briefs/{chat_id}/{uuid.uuid4().hex[:8]}-{core.clean_name(name)}", data,
+                                  core.content_type(name, "image/jpeg"))
+        update_brief(chat_id, background_image_url=uri)
+    elif mode == "voice":
         if core.ext_of(name) == ".pdf":
             tg_send(chat_id, "Reading the PDF, this takes a few seconds ...")
         text = core.save_voice(store(), ai, name, fetch())

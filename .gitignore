@@ -14,3 +14,4 @@ orchestrator-agent/orchestrator_agent/.agent_engine_config.json
 .agent-engine-resource
 brand-proposal.json
 telegram-intake/brandcore.py
+telegram-intake/shared/

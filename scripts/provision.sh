@@ -25,7 +25,7 @@ else
   gcloud storage buckets create "gs://$BUCKET" --location="$REGION" --uniform-bucket-level-access
 fi
 LIFECYCLE="$(mktemp)"
-echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90,"matchesPrefix":["renders/"]}}]}' > "$LIFECYCLE"
+echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90,"matchesPrefix":["renders/","briefs/"]}}]}' > "$LIFECYCLE"
 gcloud storage buckets update "gs://$BUCKET" --lifecycle-file="$LIFECYCLE"
 rm -f "$LIFECYCLE"
 
