@@ -1,0 +1,4 @@
+google-adk[a2a]==2.9.2
+google-cloud-firestore==2.31.0
+httpx==0.28.1
+pyyaml==6.0.3

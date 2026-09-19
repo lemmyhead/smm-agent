@@ -1,0 +1,4 @@
+# Used by tests / local `adk run`. The deployed copy is orchestrator_agent/requirements.txt.
+-r orchestrator_agent/requirements.txt
+pytest
+pytest-asyncio

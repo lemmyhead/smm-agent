@@ -1,0 +1,5 @@
+facebook:          { width: 1200, height: 630,  copy_limit: 500,  template: landscape_191x1 }
+instagram_feed:    { width: 1080, height: 1350, copy_limit: 2200, template: portrait_4x5 }
+instagram_story:   { width: 1080, height: 1920, copy_limit: 0,    template: portrait_9x16 }
+threads:           { width: 1080, height: 1350, copy_limit: 500,  template: portrait_4x5 }
+youtube_community: { width: 1080, height: 1080, copy_limit: 1500, template: square_1x1 }

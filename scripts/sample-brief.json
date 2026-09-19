@@ -1,0 +1,15 @@
+{
+  "campaign_name": "Spring Sale",
+  "key_message": "Everything in the spring collection is 30% off this weekend only.",
+  "tone": "warm, upbeat, a little playful",
+  "cta": "Shop now",
+  "link": "https://example.com/spring-sale",
+  "brand": {
+    "logo_url": "https://REPLACE-WITH-A-REAL-LOGO.png",
+    "primary_color": "#12355b",
+    "accent_color": "#ffb703",
+    "font": "Inter"
+  },
+  "background_image_url": "https://REPLACE-WITH-A-REAL-IMAGE.jpg",
+  "platforms": ["facebook", "instagram_feed", "instagram_story", "threads", "youtube_community"]
+}
