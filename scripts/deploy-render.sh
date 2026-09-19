@@ -3,9 +3,11 @@
 source "$(dirname "$0")/_env.sh"
 "$ROOT/scripts/sync-shared.sh"
 
+# Scales to zero when idle (no cost). RENDER_MIN_INSTANCES=1 keeps one instance warm, which avoids a slow first render
+# but costs roughly $20-30 a month around the clock.
 gcloud run deploy smm-render-service \
   --source "$ROOT/render-service" --region "$REGION" \
-  --memory 2Gi --cpu 2 --concurrency 4 --min-instances 1 \
+  --memory 2Gi --cpu 2 --concurrency 4 --min-instances "${RENDER_MIN_INSTANCES:-0}" \
   --execution-environment gen2 \
   --service-account "$(sa sa-render-service)" \
   --set-env-vars "ASSETS_BUCKET=$BUCKET" \

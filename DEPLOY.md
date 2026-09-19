@@ -106,7 +106,7 @@ scripts/deploy-render.sh
 
 What it does: copies `shared/` into the service folder (`scripts/sync-shared.sh`), builds the
 Playwright/Chromium image with Cloud Build, and deploys `smm-render-service` with 2 GiB / 2 CPU,
-concurrency 4, `min-instances=1`, private access only. Afterwards it grants `sa-agent-orchestrator`
+concurrency 4, `min-instances=0` (set `RENDER_MIN_INSTANCES=1` to keep one warm), private access only. Afterwards it grants `sa-agent-orchestrator`
 the `run.invoker` role. This is the binding the provisioning spec says must come after this deploy.
 
 The first build takes several minutes (the Playwright base image is large).
@@ -408,11 +408,11 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 | Deploy of the function fails with "Permission denied while using the Eventarc Service Agent" | First Eventarc use in the project; permissions take a few minutes to propagate. Wait and re-run `scripts/deploy-notify.sh`. |
 | Function logs / Cloud Run show 403 "request was not authenticated" | `sa-notify-function` lacks `roles/run.invoker` on `smm-notify-reviewer` (`deploy-notify.sh` grants it; re-run it). |
 | Function never triggers | Confirm the trigger exists: `gcloud eventarc triggers list --location=us-central1`. Then confirm `eventarc.googleapis.com` is enabled and the function's service account has `roles/eventarc.eventReceiver`. |
-| First render after idle is slow | Expected only if `min-instances` was lowered; the script keeps 1 warm instance. |
+| First render after idle takes a few seconds longer | Expected: the service scales to zero. `RENDER_MIN_INSTANCES=1 scripts/deploy-render.sh` keeps one instance warm (about $20-30 a month). |
 
 ## Cost notes
 
-- `smm-render-service` keeps one 2-CPU / 2 GiB instance running all the time (`min-instances=1`, as the spec asks).
+- `smm-render-service` scales to zero (`min-instances=0`) instead of the spec's 1, because a permanently running 2-CPU / 2 GiB instance costs roughly $20-30 a month. The price is a cold start on the first render after idle; `RENDER_MIN_INSTANCES=1` restores the spec's behaviour.
   It's the biggest fixed cost here. Setting it to 0 saves that, at the price of a slow first request.
 - `smm-telegram-intake` and `smm-brief-intake` use instance-based billing (`--no-cpu-throttling`); they scale to zero when idle, so they are only billed while running.
 - The agent has `min_instances: 0`; Gemini and Cloud Build usage is billed per use.
